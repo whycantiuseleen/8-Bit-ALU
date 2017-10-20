@@ -1,0 +1,673 @@
+module mojo_top (
+    input clk,              // 50MHz clock
+    input rst_n,            // reset button (active low)
+    output led [8],         // 8 user controllable LEDs
+    input cclk,             // configuration clock, AVR ready when high
+    output spi_miso,        // AVR SPI MISO
+    input spi_ss,           // AVR SPI Slave Select
+    input spi_mosi,         // AVR SPI MOSI
+    input spi_sck,          // AVR SPI Clock
+    output spi_channel [4], // AVR general purpose pins (used by default to select ADC channel)
+    input avr_tx,           // AVR TX (FPGA RX)
+    output avr_rx,          // AVR RX (FPGA TX)
+    input avr_rx_busy,      // AVR RX buffer full
+    output io_led [3][8],   // LEDs on IO Shield
+    output io_seg [8],      // 7-segment LEDs on IO Shield
+    output io_sel [4],      // Digit select on IO Shield
+    input io_button [5],    // 5 buttons on IO Shield
+    input io_dip [3][8]     // DIP switches on IO Shield
+  ) {
+  
+  sig rst;                  // reset signal
+  
+  .clk(clk) {
+    // The reset conditioner is used to synchronize the reset signal to the FPGA
+    // clock. This ensures the entire FPGA comes out of reset at the same time.
+    reset_conditioner reset_cond;
+    .rst(rst){
+    dff ctr[29]; //ctr used to cycle through different state. it is a dflip-flop
+    counter myCounter (#SIZE(3), #DIV(16));//myCounter to light up led
+    fsm state = {IDLE, ADDERTEST1,ADDERTEST1OVF, ADDERTEST2,ADDERTEST2OVF,ADDERTEST3,ADDERTEST4,ADDERERROR,ADDERERRORTEST,
+      BOOLEANTEST1, BOOLEANTEST2,BOOLEANTEST3,BOOLEANTEST4,BOOLEANERROR,BOOLEANERRORTEST,
+      COMPARABLETEST1,COMPARABLETEST1F,COMPARABLETEST2,COMPARABLETEST2F,COMPARABLETEST3,COMPARABLETEST3F,COMPARABLEERROR,COMPARABLEERRORTEST,
+      SHIFTERTEST1,SHIFTERTEST2,SHIFTERTEST3,SHIFTERERROR,SHIFTERERRORTEST,END};
+        //STATES TO TEST OUR MODs.
+  }
+  }
+    
+  sig alufn[6]; //6bit oppcode input
+  sig a[8]; //8 bit A input
+  sig b[8]; //8 bit B input
+  sig alu[8]; // 8 bit ALU output
+  const X = 28; //constant that controls how long till the transitioning of the next state
+  
+  alu_8 aluI; //calling the alu module
+  decimal32 dec3; //calling the dec3 module
+  
+  //calling the sevenseg module
+  seven_seg seven_seg0; // led sel 0
+  seven_seg seven_seg1; // leg sel 1
+  seven_seg seven_seg2; // led sel 2
+  seven_seg seven_seg3; // led sel 3
+
+  
+   
+  
+  always {
+    reset_cond.in = ~rst_n; // input raw inverted reset signal
+    rst = reset_cond.out;   // conditioned reset
+    
+    led = 8h00;             // turn LEDs off
+    spi_miso = bz;          // not using SPI
+    spi_channel = bzzzz;    // not using flags
+    avr_rx = bz;            // not using serial port
+    led[7] = aluI.overflow;
+    
+    io_led = 3x{{8h00}};    // turn LEDs off
+    io_seg = 8hff;          // turn segments off
+    io_sel = 4hf;           // select no digits
+    
+    a = io_dip[0]; //right dip switch controls input a
+    b = io_dip[1]; //middle dip switch controls input b
+    alufn = io_dip[2]; //left dip switch controls input of alufn, do not worry about the yellow underline as the most sig bits will be dropped
+    
+    //assigning inputs and outputs of aluI
+    aluI.a = $signed(a);
+    aluI.b = $signed(b);
+    aluI.alufn = alufn;
+    alu = aluI.alu;
+    
+    
+    io_led[2] = alu; //left leds show 8bit output of alu
+    io_led[1] = io_dip[1]; // middle leds show 8bit input of b
+    io_led[0] = io_dip[0]; // right leds show 8bit input of a
+    
+    dec3.a = alu; //converting the alu into 3 digits decimal value
+    //-------------------------------------
+    if (aluI.overflow == 1){
+      seven_seg0.char = b1101; // 1s
+      seven_seg1.char = b1101; // 10s
+      seven_seg2.char = b1101; // 100s
+      seven_seg3.char = b1101;    }
+    else{
+    //assigning the output of dec3 to the char of seven_seg
+    seven_seg0.char = dec3.out0; // 1s
+    seven_seg1.char = dec3.out1; // 10s
+    seven_seg2.char = dec3.out2; // 100s
+    seven_seg3.char = b1111; // default should be empty
+    //if (alu < 0){ //make sure there is a minus sign displayed on the leds
+    //   seven_seg3.char = b1101;} // negative sign
+    }
+      
+    // STATEMACHINE TEST CASES  // ERROR CASES ARE ALL WRITTEN AT THE END
+      case(state.q){
+      
+        state.IDLE: //normal functioning ALU
+          ctr.d = 0; // clock counter is 0 when idle
+          if(io_button[1] == 1){ // this is the center button out of the 5 buttons.
+            //state.d = state.ADDERTEST1; }//transition to alu module testing
+              state.d = state.ADDERTEST1;}
+        state.ADDERTEST1: // (ADD) 7 + 23 = 30 (8b11110)
+          seven_seg3.char = b1010; //this is to show that is ADDER
+          aluI.alufn = 6b0;
+          aluI.a = 8b111; //inp a = 7
+          aluI.b = 8b10111; //inp b = 23
+          alu = aluI.alu;
+          io_led[0] = 8b111; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10111; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){ // when the counter reaches the defined value
+            ctr.d = 0; //reset counter value
+            if (alu == 8b11110){
+              state.d = state.ADDERTEST1OVF; //next test state
+            }
+            else{
+              state.d = state.ADDERERROR; //move to the error state
+            }
+          }
+            
+ 
+        state.ADDERTEST1OVF:  // (ADD + OVERFLOW) 64 + 66 = 130 (8b10000010)
+          seven_seg3.char = b1010; //this is to show that is ADDER
+          aluI.alufn = 6b0;
+          aluI.a = 8b1000000; //inp a = 64
+          aluI.b = 8b1000010; //inp b = 66
+          alu = aluI.alu;
+          io_led[0] = 8b1000000; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b1000010; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          seven_seg0.char = b1101; // 1s
+          seven_seg1.char = b1101; // 10s
+          seven_seg2.char = b1101; // 100s
+          seven_seg3.char = b1101;
+          led[7] = aluI.overflow;
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b10000010){
+              state.d = state.ADDERTEST2; //next test state
+            }
+            else{
+              state.d = state.ADDERERROR; //move to the error state
+            }
+          }     
+        
+        
+        state.ADDERTEST2: // (SUBTRACT) 10-4 = 6 (8b110)
+          seven_seg3.char = b1010; //this is to show that is ADDER
+          aluI.alufn = 6b1;
+          aluI.a = 8b1010; //inp a = 10
+          aluI.b = 8b100; //inp b = 4
+          alu = aluI.alu;
+          io_led[0] = 8b1010; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b100; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b110){
+              state.d = state.ADDERTEST2OVF; //next test state
+            }
+            else{
+              state.d = state.ADDERERROR; //move to the error state
+            }
+          }     
+          
+          
+        state.ADDERTEST2OVF: // (SUB + OVERFLOW) -100 -60 = -160 (8b01100000)
+          seven_seg3.char = b1010; //this is to show that is ADDER
+          aluI.alufn = 6b1;
+          aluI.a = 8b10011100; //inp a = -100
+          aluI.b = 8b111100; //inp b = 60
+          alu = aluI.alu;
+          io_led[0] = 8b10011100; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b111100; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          seven_seg0.char = b1101; // 1s
+          seven_seg1.char = b1101; // 10s
+          seven_seg2.char = b1101; // 100s
+          seven_seg3.char = b1101;
+          led[7] = aluI.overflow;
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b01100000){
+              state.d = state.ADDERTEST3; //next test state
+            }
+            else{
+              state.d = state.ADDERERROR; //move to the error state
+            }
+          }   
+        
+        state.ADDERTEST3: // (MUL) 4*2 = 8 (8b1000)
+          seven_seg3.char = b1010; //this is to show that is ADDER
+          aluI.alufn = 6b10;
+          aluI.a = 8b100; //inp a = -100
+          aluI.b = 8b10; //inp b = 60
+          alu = aluI.alu;
+          io_led[0] = 8b100; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b1000){
+              state.d = state.ADDERTEST4; //next test state
+            }
+            else{
+              state.d = state.ADDERERROR; //move to the error state
+            }
+          }   
+          
+        state.ADDERTEST4: // (MOD) 65%8 = 1 (8b1)
+          seven_seg3.char = b1010; //this is to show that is ADDER
+          aluI.alufn = 6b11;
+          aluI.a = 8b1000001; //inp a = -100
+          aluI.b = 8b1000; //inp b = 60
+          alu = aluI.alu;
+          io_led[0] = 8b1000001; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b1000; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b1){
+              state.d = state.ADDERERRORTEST; //next test state
+            }
+            else{
+              state.d = state.ADDERERROR; //move to the error state
+            }
+          }   
+          
+        state.ADDERERRORTEST: // (ADD) 7 + 23 = 30 (8b11110)
+          seven_seg3.char = b1010; //this is to show that is ADDER
+          aluI.alufn = 6b0;
+          aluI.a = 8b111; //inp a = 7
+          aluI.b = 8b10111; //inp b = 23
+          alu = aluI.alu + 1; //this is done in order to trigger to the addererror state.
+          io_led[0] = 8b111; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10111; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b11110){
+              state.d = state.BOOLEANTEST1; //next test state
+            }
+            else{
+              state.d = state.ADDERERROR; //move to the error state
+            }
+          }
+          
+        state.ADDERERROR: //ERROR STATE, SHOW AErr on the 7seg led
+          seven_seg3.char = b1010; // PRINTS A
+          seven_seg0.char = b1011; // PRINTS r
+          seven_seg1.char = b1011; // PRINTS r
+          seven_seg2.char = b1110; //PRINTS E
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0;
+            state.d = state.BOOLEANTEST1;}
+            
+        state.BOOLEANTEST1: //(AND) 8b10010110 & 8b01010101 = 8b00010100
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;
+          seven_seg3.char = b1000; // makes the seven seg not show anything
+          //seven_seg3.char = b1000; //this is to show that is BOOLEAN
+          aluI.alufn = 6b11000;
+          aluI.a = 8b10010110;
+          aluI.b = 8b01010101;
+          alu = aluI.alu;
+          io_led[0] = 8b10010110; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b01010101; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b00010100){
+              state.d = state.BOOLEANTEST2; //next test state
+            }
+            else{
+              state.d = state.BOOLEANERROR; //move to the error state
+            }
+          }
+          
+        state.BOOLEANTEST2: //(OR) 8b10010110 | 8b01010101 = 8b11010111
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;// makes the seven seg not show anything
+          seven_seg3.char = b1000; //shows B
+          //seven_seg3.char = b1000; //this is to show that is BOOLEAN
+          aluI.alufn = 6b11110;
+          aluI.a = 8b10010110;
+          aluI.b = 8b01010101;
+          alu = aluI.alu;
+          io_led[0] = 8b10010110; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b01010101; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b11010111){
+              state.d = state.BOOLEANTEST3; //next test state
+            }
+            else{
+              state.d = state.BOOLEANERROR; //move to the error state
+            }
+          }
+        
+        state.BOOLEANTEST3: //(XOR) 8b10010110 ^ 8b01010101 = 8b11000011
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;// makes the seven seg not show anything
+          seven_seg3.char = b1000; //shows B
+          //seven_seg3.char = b1000; //this is to show that is BOOLEAN
+          aluI.alufn = 6b10110;
+          aluI.a = 8b10010110;
+          aluI.b = 8b01010101;
+          alu = aluI.alu;
+          io_led[0] = 8b10010110; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b01010101; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b11000011){
+              state.d = state.BOOLEANTEST4; //next test state
+            }
+            else{
+              state.d = state.BOOLEANERROR; //move to the error state
+            }
+          }
+          
+        state.BOOLEANTEST4: // ("A"LDR): 8b10010110
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;// makes the seven seg not show anything
+          seven_seg3.char = b1000; //shows B
+          //seven_seg3.char = b1000; //this is to show that is BOOLEAN
+          aluI.alufn = 6b11010;
+          aluI.a = 8b10010110;
+          aluI.b = 8b01010101;
+          alu = aluI.alu;
+          io_led[0] = 8b10010110; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b01010101; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b10010110){
+              state.d = state.BOOLEANERRORTEST; //next test state
+            }
+            else{
+              state.d = state.BOOLEANERROR; //move to the error state
+            }
+          }
+        
+        state.BOOLEANERRORTEST: //(AND) 8b10010110 & 8b01010101 = 8b00010100
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;// makes the seven seg not show anything
+          seven_seg3.char = b1000; //shows B
+          //seven_seg3.char = b1000; //this is to show that is BOOLEAN
+          aluI.alufn = 6b11000;
+          aluI.a = 8b10010110;
+          aluI.b = 8b01010101;
+          alu = aluI.alu + 1; //this is to make sure the answer is wrong
+          io_led[0] = 8b10010110; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b01010101; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b00010100){
+              state.d = state.COMPARABLETEST1; //next test state
+            }
+            else{
+              state.d = state.BOOLEANERROR; //move to the error state
+            }
+          }
+          
+        state.BOOLEANERROR: //ERROR STATE, SHOW BErr on the 7seg led
+          seven_seg3.char = b1000; // PRINTS B
+          seven_seg0.char = b1011; // PRINTS r
+          seven_seg1.char = b1011; // PRINTS r
+          seven_seg2.char = b1110; //PRINTS E
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0;
+            state.d = state.COMPARABLETEST1;} 
+        
+        state.COMPARABLETEST1: //(CMPEQ) 8b10111001 == 8b10111001? (8b1)
+          seven_seg3.char = b1100; //this is to show that is BOOLEAN
+          aluI.alufn = 6b110011;
+          aluI.a = 8b10111001;
+          aluI.b = 8b10111001;
+          alu = aluI.alu;
+          io_led[0] = 8b10111001; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10111001; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b1){
+              state.d = state.COMPARABLETEST1F; //next test state
+            }
+            else{
+              state.d = state.COMPARABLEERROR; //move to the error state
+            }
+          }
+        
+        state.COMPARABLETEST1F: //(CMPEQ) 8b1 == 8b10? (8b0)
+          seven_seg3.char = b1100; //this is to show that is BOOLEAN
+          aluI.alufn = 6b110011;
+          aluI.a = 8b1;
+          aluI.b = 8b10;
+          alu = aluI.alu;
+          io_led[0] = 8b1; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b0){
+              state.d = state.COMPARABLETEST2; //next test state
+            }
+            else{
+              state.d = state.COMPARABLEERROR; //move to the error state
+            }
+          }        
+        
+        state.COMPARABLETEST2: //(CMPLT) 8b10111001 < 8b11111001? (8b1)
+          seven_seg3.char = b1100; //this is to show that is BOOLEAN
+          aluI.alufn = 6b110101;
+          aluI.a = 8b10111001;
+          aluI.b = 8b11111001;
+          alu = aluI.alu;
+          io_led[0] = 8b10111001; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b11111001; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b1){
+              state.d = state.COMPARABLETEST2F; //next test state
+            }
+            else{
+              state.d = state.COMPARABLEERROR; //move to the error state
+            }
+          }        
+        
+        state.COMPARABLETEST2F: //(CMPLT) 8b10111101 < 8b10111001? (8b0)
+          seven_seg3.char = b1100; //this is to show that is BOOLEAN
+          aluI.alufn = 6b110101;
+          aluI.a = 8b10111101;
+          aluI.b = 8b10111001;
+          alu = aluI.alu;
+          io_led[0] = 8b10111101; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10111001; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b0){
+              state.d = state.COMPARABLETEST3; //next test state
+            }
+            else{
+              state.d = state.COMPARABLEERROR; //move to the error state
+            }
+          }            
+        
+        state.COMPARABLETEST3: //(CMPLTOE) 8b10111001 <= 8b10111001? (8b1)
+          seven_seg3.char = b1100; //this is to show that is BOOLEAN
+          aluI.alufn = 6b110111;
+          aluI.a = 8b10111001;
+          aluI.b = 8b10111001;
+          alu = aluI.alu;
+          io_led[0] = 8b10111001; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10111001; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b1){
+              state.d = state.COMPARABLETEST3F; //next test state
+            }
+            else{
+              state.d = state.COMPARABLEERROR; //move to the error state
+            }
+          } 
+          
+        state.COMPARABLETEST3F: //(CMPLTOE) 8b10111011 <= 8b10111001? (8b0)
+          seven_seg3.char = b1100; //this is to show that is BOOLEAN
+          aluI.alufn = 6b110111;
+          aluI.a = 8b10111011;
+          aluI.b = 8b10111001;
+          alu = aluI.alu;
+          io_led[0] = 8b10111011; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10111001; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b0){
+              state.d = state.COMPARABLEERRORTEST; //next test state
+            }
+            else{
+              state.d = state.COMPARABLEERROR; //move to the error state
+            }
+          }                  
+        
+        state.COMPARABLEERRORTEST: //(CMPLTOE) 8b10111011 <= 8b10111001? (8b0)
+          seven_seg3.char = b1100; //this is to show that is BOOLEAN
+          aluI.alufn = 6b110111;
+          aluI.a = 8b10111011;
+          aluI.b = 8b10111001;
+          alu = aluI.alu + 1; //this is to make sure the output is wrong
+          io_led[0] = 8b10111011; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10111001; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b0){
+              state.d = state.COMPARABLEERRORTEST; //next test state
+            }
+            else{
+              state.d = state.COMPARABLEERROR; //move to the error state
+            }
+          }              
+        
+        state.COMPARABLEERROR: //ERROR STATE, SHOW CErr on the 7seg led
+          seven_seg3.char = b1100; // PRINTS C
+          seven_seg0.char = b1011; // PRINTS r
+          seven_seg1.char = b1011; // PRINTS r
+          seven_seg2.char = b1110; //PRINTS E
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0;
+            state.d = state.SHIFTERTEST1;}         
+        
+          
+          
+        state.SHIFTERTEST1: //(SHL) 8b1111 << 4 = 8b11110000
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;
+          seven_seg3.char = 7b0111111; // makes the seven seg not show anything
+          //seven_seg3.char = b0101; //this is to show that is BOOLEAN
+          aluI.alufn = 6b100000;
+          aluI.a = 8b1111;
+          aluI.b = 8b100;
+          alu = aluI.alu;
+          io_led[0] = 8b1111; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b100; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b11110000){
+              state.d = state.SHIFTERTEST2; //next test state
+            }
+            else{
+              state.d = state.SHIFTERERROR; //move to the error state
+            }
+          }         
+        
+        state.SHIFTERTEST2: //(SHR) 8b1111 >> 3 = 8b1
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;
+          seven_seg3.char = 7b0111111; // makes the seven seg not show anything
+          //seven_seg3.char = b0101; //this is to show that is BOOLEAN
+          aluI.alufn = 6b100001;
+          aluI.a = 8b1111;
+          aluI.b = 8b11;
+          alu = aluI.alu;
+          io_led[0] = 8b1111; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b11; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b1){
+              state.d = state.SHIFTERTEST3; //next test state
+            }
+            else{
+              state.d = state.SHIFTERERROR; //move to the error state
+            }
+          }        
+        
+        state.SHIFTERTEST3: //(SRA) 8b10110000 >>> 2 = 8b11101100
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;
+          seven_seg3.char = 7b0111111; // makes the seven seg not show anything
+          //seven_seg3.char = b0101; //this is to show that is BOOLEAN
+          aluI.alufn = 6b100011;
+          aluI.a = 8b10110000;
+          aluI.b = 8b10;
+          alu = aluI.alu; // TO MAKE SURE THAT ANSWER IS WRONG AND GO INTO ELSE STATEMENT
+          io_led[0] = 8b10110000; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b10; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b10110000){
+              state.d = state.SHIFTERERRORTEST; //next test state
+            }
+            else{
+              state.d = state.SHIFTERERROR; //move to the error state
+            }
+          }                  
+        
+        state.SHIFTERERRORTEST: //(SRA) 8b1111 >>> 3 = 8b11100001
+          seven_seg0.char = 7b0111111;
+          seven_seg1.char = 7b0111111;
+          seven_seg2.char = 7b0111111;
+          seven_seg3.char = 7b0111111; // makes the seven seg not show anything
+          //seven_seg3.char = b0101; //this is to show that is BOOLEAN
+          aluI.alufn = 6b100011;
+          aluI.a = 8b1111;
+          aluI.b = 8b11;
+          alu = aluI.alu +1 ; // TO MAKE SURE THAT ANSWER IS WRONG AND GO INTO ELSE STATEMENT
+          io_led[0] = 8b1111; //right 8 leds = 8 bits of inp a
+          io_led[1] = 8b11; //center 8 leds = 8 bits of inp b
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0; //reset counter value
+            if (alu == 8b11100001){
+              state.d = state.END; //next test state
+            }
+            else{
+              state.d = state.SHIFTERERROR; //move to the error state
+            }
+          }  
+          
+        state.SHIFTERERROR: //ERROR STATE, SHOW SErr on the 7seg led
+          seven_seg3.char = b0101; // PRINTS S
+          seven_seg0.char = b1011; // PRINTS r
+          seven_seg1.char = b1011; // PRINTS r
+          seven_seg2.char = b1110; //PRINTS E
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0;
+            state.d = state.END;}           
+                 
+        state.END: //ERROR STATE, SHOW SErr on the 7seg led
+          seven_seg3.char = b1111; // PRINTS nothing
+          seven_seg0.char = b1110; // PRINTS E
+          seven_seg1.char = b1100; // PRINTS C
+          seven_seg2.char = b1010; //PRINTS A
+          ctr.d = ctr.q +1; //incrementing the counter
+          if (ctr.q[X] == 1){
+            ctr.d = 0;
+            state.d = state.IDLE;} //return to non-testing state       
+        
+        
+        
+        
+        
+        
+        
+        }
+      
+      //lighting up of all the led sel and seg
+    case(myCounter.value){
+        0:io_seg = ~seven_seg0.segs;//for the 1st 7seg led from the right
+          io_sel = ~4b1;
+        1:io_seg = ~seven_seg1.segs;//for the 2nd 7seg led
+          io_sel = ~4b10;
+        2:io_seg = ~seven_seg2.segs;//for the 3rd 7seg led
+          io_sel = ~4b100;
+        3:io_seg = ~seven_seg3.segs;//for the 4th 7seg led
+          io_sel = ~4b1000;
+        default:
+          io_seg = ~seven_seg0.segs; 
+          io_sel = ~4b1;
+      }
+           
+                   
+    }
+  }
